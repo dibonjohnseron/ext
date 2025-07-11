@@ -1,0 +1,61 @@
+# Function to get file size in MB with two decimals
+function Get-FileSizeMB($path) {
+    if (Test-Path $path) {
+        $bytes = (Get-Item $path).Length
+        return [math]::Round($bytes / 1MB, 2)
+    } else {
+        return $null
+    }
+}
+
+# Find the Ubuntu WSL VHDX path
+$ubuntuVhdxPath = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss" | ForEach-Object {
+    $props = Get-ItemProperty -Path $_.PSPath
+    if ($props.DistributionName -and $props.DistributionName.ToLower().Contains("ubuntu")) {
+        return "$($props.BasePath)\ext4.vhdx"
+    }
+} | Select-Object -First 1
+
+if (-not $ubuntuVhdxPath) {
+    Write-Error "Ubuntu VHDX path not found."
+    exit 1
+}
+
+Write-Host "Ubuntu VHDX Path: $ubuntuVhdxPath"
+
+# Get size before shutdown
+$sizeBefore = Get-FileSizeMB $ubuntuVhdxPath
+if ($sizeBefore -eq $null) {
+    Write-Error "VHDX file not found at path: $ubuntuVhdxPath"
+    exit 1
+}
+
+Write-Host "Current space taken: $sizeBefore MB"
+
+# Shutdown WSL
+wsl --shutdown
+
+# Prepare diskpart commands
+$diskpartCommands = @"
+select vdisk file="$ubuntuVhdxPath"
+attach vdisk readonly
+compact vdisk
+detach vdisk
+exit
+"@
+
+# Run diskpart with the commands
+$diskpartCommands | diskpart
+
+# Get size after compact
+$sizeAfter = Get-FileSizeMB $ubuntuVhdxPath
+if ($sizeAfter -eq $null) {
+    Write-Error "VHDX file not found after compacting: $ubuntuVhdxPath"
+    exit 1
+}
+
+Write-Host "Space taken after compact: $sizeAfter MB"
+
+# Calculate space saved
+$spaceSaved = [math]::Round($sizeBefore - $sizeAfter, 2)
+Write-Host "Total space saved: $spaceSaved MB"
