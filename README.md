@@ -25,3 +25,5 @@ irm https://raw.githubusercontent.com/dibonjohnseron/ext/refs/heads/main/compact
 ```
 
 If the default Docker disk is not found, the script warns and compacts only Ubuntu. It shuts down all WSL distributions and does not restart Docker Desktop.
+
+The script reports errors in the PowerShell window rather than closing it. Compaction can take a while; wait for the total space saved or an error before closing the window.

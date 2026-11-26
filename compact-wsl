@@ -13,8 +13,7 @@ $ubuntuVhdxPath = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion
 } | Select-Object -First 1
 
 if (-not $ubuntuVhdxPath) {
-    Write-Error "Ubuntu VHDX path not found."
-    exit 1
+    throw "Ubuntu VHDX path not found."
 }
 
 $dockerVhdxPath = if ($env:DOCKER_VHDX_PATH) {
@@ -27,34 +26,30 @@ $disks = @(@{ Name = "Ubuntu"; Path = $ubuntuVhdxPath })
 if (Test-Path -LiteralPath $dockerVhdxPath -PathType Leaf) {
     $disks += @{ Name = "Docker"; Path = $dockerVhdxPath }
 } elseif ($env:DOCKER_VHDX_PATH) {
-    Write-Error "Docker VHDX file not found at configured path: $dockerVhdxPath"
-    exit 1
+    throw "Docker VHDX file not found at configured path: $dockerVhdxPath"
 } else {
     Write-Warning "Docker VHDX not found at $dockerVhdxPath. Set DOCKER_VHDX_PATH if it is stored elsewhere; Docker will be skipped."
 }
 
 if (Get-Process -Name "Docker Desktop", "com.docker.backend" -ErrorAction SilentlyContinue) {
-    Write-Error "Quit Docker Desktop completely before running this script."
-    exit 1
+    throw "Quit Docker Desktop completely before running this script."
 }
 
 foreach ($disk in $disks) {
     $disk.SizeBefore = Get-FileSizeMB $disk.Path
     if ($null -eq $disk.SizeBefore) {
-        Write-Error "$($disk.Name) VHDX file not found at path: $($disk.Path)"
-        exit 1
+        throw "$($disk.Name) VHDX file not found at path: $($disk.Path)"
     }
     if ($disk.Path -match '["\r\n]') {
-        Write-Error "Invalid VHDX path: $($disk.Path)"
-        exit 1
+        throw "Invalid VHDX path: $($disk.Path)"
     }
     Write-Host "$($disk.Name) VHDX: $($disk.Path) ($($disk.SizeBefore) MB)"
 }
 
+Write-Host "Shutting down WSL..."
 wsl --shutdown
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "WSL shutdown failed."
-    exit 1
+    throw "WSL shutdown failed with exit code $LASTEXITCODE."
 }
 
 $diskpartCommands = foreach ($disk in $disks) {
@@ -68,10 +63,10 @@ $diskpartCommands += "exit"
 $scriptPath = [System.IO.Path]::GetTempFileName()
 try {
     $diskpartCommands | Out-File -LiteralPath $scriptPath -Encoding Unicode
+    Write-Host "Compacting VHDX files with DiskPart. This may take a while..."
     diskpart /s $scriptPath
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "DiskPart failed. A VHDX may still be attached read-only; check Disk Management before retrying."
-        exit 1
+        throw "DiskPart failed with exit code $LASTEXITCODE. A VHDX may still be attached read-only; check Disk Management before retrying."
     }
 } finally {
     Remove-Item -LiteralPath $scriptPath -ErrorAction Stop
@@ -81,8 +76,7 @@ $totalSaved = 0
 foreach ($disk in $disks) {
     $sizeAfter = Get-FileSizeMB $disk.Path
     if ($null -eq $sizeAfter) {
-        Write-Error "$($disk.Name) VHDX file not found after compacting: $($disk.Path)"
-        exit 1
+        throw "$($disk.Name) VHDX file not found after compacting: $($disk.Path)"
     }
     $spaceSaved = [math]::Round($disk.SizeBefore - $sizeAfter, 2)
     $totalSaved += $spaceSaved
