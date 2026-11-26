@@ -43,6 +43,9 @@ foreach ($disk in $disks) {
     if ($disk.Path -match '["\r\n]') {
         throw "Invalid VHDX path: $($disk.Path)"
     }
+    if ($disk.Path -match '[^\x00-\x7F]') {
+        throw "DiskPart script requires an ASCII-only VHDX path: $($disk.Path)"
+    }
     Write-Host "$($disk.Name) VHDX: $($disk.Path) ($($disk.SizeBefore) MB)"
 }
 
@@ -62,7 +65,7 @@ $diskpartCommands += "exit"
 
 $scriptPath = [System.IO.Path]::GetTempFileName()
 try {
-    $diskpartCommands | Out-File -LiteralPath $scriptPath -Encoding Unicode
+    $diskpartCommands | Out-File -LiteralPath $scriptPath -Encoding ASCII
     Write-Host "Compacting VHDX files with DiskPart. This may take a while..."
     diskpart /s $scriptPath
     if ($LASTEXITCODE -ne 0) {
