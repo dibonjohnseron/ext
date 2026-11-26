@@ -1,18 +1,14 @@
-# Function to get file size in MB with two decimals
 function Get-FileSizeMB($path) {
-    if (Test-Path $path) {
-        $bytes = (Get-Item $path).Length
-        return [math]::Round($bytes / 1MB, 2)
-    } else {
-        return $null
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        return [math]::Round((Get-Item -LiteralPath $path).Length / 1MB, 2)
     }
+    return $null
 }
 
-# Find the Ubuntu WSL VHDX path
 $ubuntuVhdxPath = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss" | ForEach-Object {
     $props = Get-ItemProperty -Path $_.PSPath
     if ($props.DistributionName -and $props.DistributionName.ToLower().Contains("ubuntu")) {
-        return "$($props.BasePath)\ext4.vhdx"
+        return (Join-Path $props.BasePath "ext4.vhdx")
     }
 } | Select-Object -First 1
 
@@ -21,41 +17,75 @@ if (-not $ubuntuVhdxPath) {
     exit 1
 }
 
-Write-Host "Ubuntu VHDX Path: $ubuntuVhdxPath"
+$dockerVhdxPath = if ($env:DOCKER_VHDX_PATH) {
+    $env:DOCKER_VHDX_PATH
+} else {
+    Join-Path $env:LOCALAPPDATA "Docker\wsl\disk\docker_data.vhdx"
+}
 
-# Get size before shutdown
-$sizeBefore = Get-FileSizeMB $ubuntuVhdxPath
-if ($sizeBefore -eq $null) {
-    Write-Error "VHDX file not found at path: $ubuntuVhdxPath"
+$disks = @(@{ Name = "Ubuntu"; Path = $ubuntuVhdxPath })
+if (Test-Path -LiteralPath $dockerVhdxPath -PathType Leaf) {
+    $disks += @{ Name = "Docker"; Path = $dockerVhdxPath }
+} elseif ($env:DOCKER_VHDX_PATH) {
+    Write-Error "Docker VHDX file not found at configured path: $dockerVhdxPath"
+    exit 1
+} else {
+    Write-Warning "Docker VHDX not found at $dockerVhdxPath. Set DOCKER_VHDX_PATH if it is stored elsewhere; Docker will be skipped."
+}
+
+if (Get-Process -Name "Docker Desktop", "com.docker.backend" -ErrorAction SilentlyContinue) {
+    Write-Error "Quit Docker Desktop completely before running this script."
     exit 1
 }
 
-Write-Host "Current space taken: $sizeBefore MB"
+foreach ($disk in $disks) {
+    $disk.SizeBefore = Get-FileSizeMB $disk.Path
+    if ($null -eq $disk.SizeBefore) {
+        Write-Error "$($disk.Name) VHDX file not found at path: $($disk.Path)"
+        exit 1
+    }
+    if ($disk.Path -match '["\r\n]') {
+        Write-Error "Invalid VHDX path: $($disk.Path)"
+        exit 1
+    }
+    Write-Host "$($disk.Name) VHDX: $($disk.Path) ($($disk.SizeBefore) MB)"
+}
 
-# Shutdown WSL
 wsl --shutdown
-
-# Prepare diskpart commands
-$diskpartCommands = @"
-select vdisk file="$ubuntuVhdxPath"
-attach vdisk readonly
-compact vdisk
-detach vdisk
-exit
-"@
-
-# Run diskpart with the commands
-$diskpartCommands | diskpart
-
-# Get size after compact
-$sizeAfter = Get-FileSizeMB $ubuntuVhdxPath
-if ($sizeAfter -eq $null) {
-    Write-Error "VHDX file not found after compacting: $ubuntuVhdxPath"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "WSL shutdown failed."
     exit 1
 }
 
-Write-Host "Space taken after compact: $sizeAfter MB"
+$diskpartCommands = foreach ($disk in $disks) {
+    "select vdisk file=`"$($disk.Path)`""
+    "attach vdisk readonly"
+    "compact vdisk"
+    "detach vdisk"
+}
+$diskpartCommands += "exit"
 
-# Calculate space saved
-$spaceSaved = [math]::Round($sizeBefore - $sizeAfter, 2)
-Write-Host "Total space saved: $spaceSaved MB"
+$scriptPath = [System.IO.Path]::GetTempFileName()
+try {
+    $diskpartCommands | Out-File -LiteralPath $scriptPath -Encoding Unicode
+    diskpart /s $scriptPath
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "DiskPart failed. A VHDX may still be attached read-only; check Disk Management before retrying."
+        exit 1
+    }
+} finally {
+    Remove-Item -LiteralPath $scriptPath -ErrorAction Stop
+}
+
+$totalSaved = 0
+foreach ($disk in $disks) {
+    $sizeAfter = Get-FileSizeMB $disk.Path
+    if ($null -eq $sizeAfter) {
+        Write-Error "$($disk.Name) VHDX file not found after compacting: $($disk.Path)"
+        exit 1
+    }
+    $spaceSaved = [math]::Round($disk.SizeBefore - $sizeAfter, 2)
+    $totalSaved += $spaceSaved
+    Write-Host "$($disk.Name): $sizeAfter MB after compacting; $spaceSaved MB saved."
+}
+Write-Host "Total space saved: $([math]::Round($totalSaved, 2)) MB"
